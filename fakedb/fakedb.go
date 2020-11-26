@@ -1,6 +1,7 @@
 package fakedb
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 	"sync"
@@ -41,8 +42,12 @@ func (d *db) LoaderFunc() func (key string) ([]byte, error) {
 	return func(key string) ([]byte, error) {
 		db := FakeDB()
 		v, ok := db.Get(key)
-		log.Printf("[slow db] search key=%s %v\n", key, ok)
+
 		time.Sleep(time.Millisecond * 100 * time.Duration(rand.Intn(10)))
+		if !ok {
+			return []byte(v), fmt.Errorf("[slow db] search key=%s %v\n", key, ok)
+		}
+		log.Printf("[slow db] search key=%s %v\n", key, ok)
 		return []byte(v), nil
 	}
 }
