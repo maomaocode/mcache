@@ -1,20 +1,25 @@
 package cache
 
 import (
+	"fmt"
 	"github.com/mcache/lru"
+	"github.com/mcache/peer"
+	"io/ioutil"
 	"log"
+	"net/http"
 	"sync"
 )
 
 var (
-	mu sync.RWMutex
+	mu     sync.RWMutex
 	groups = make(map[string]*Group)
 )
 
 type Group struct {
-	name      string
-	loader    LoaderFunc
-	mainCache cache
+	name       string
+	loader     LoaderFunc
+	mainCache  cache
+	peerPicker peer.PeerPicker
 }
 
 func NewGroup(name string, capacity int64, loader LoaderFunc) *Group {
@@ -33,13 +38,34 @@ func NewGroup(name string, capacity int64, loader LoaderFunc) *Group {
 	return g
 }
 
-func GetGroup(name string)  *Group {
+
+
+func GetGroup(name string) *Group {
 	mu.RLock()
 	defer mu.RUnlock()
 	return groups[name]
 }
 
+func (g *Group) BindPeerPicker (peerPicker peer.PeerPicker) {
+	mu.Lock()
+	defer mu.Unlock()
+	g.peerPicker = peerPicker
+}
+
 func (g *Group) Get(key string) (ByteView, error) {
+
+	if g.peerPicker != nil {
+		p := g.peerPicker .PickPeer(key)
+		if p != "" {
+			log.Printf("load from remote %s\n", p)
+			data, err := g.loadFromRemote(p, key)
+			if err != nil {
+				return ByteView{}, err
+			}
+			return ByteView{data}, nil
+		}
+	}
+
 	if v, ok := g.mainCache.get(key); ok {
 		log.Printf("[cache] hit key=%s", key)
 		return v, nil
@@ -47,7 +73,32 @@ func (g *Group) Get(key string) (ByteView, error) {
 	return g.load(key)
 }
 
-func (g *Group) load(key string,) (ByteView, error) {
+func (g *Group) loadFromRemote(peer, key string) ([]byte, error) {
+		u := fmt.Sprintf(
+			"%v%v/%v",
+			peer,
+			g.name,
+			key,
+		)
+		res, err := http.Get(u)
+		if err != nil {
+			return nil, err
+		}
+		defer res.Body.Close()
+
+		if res.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("server returned: %v", res.Status)
+		}
+
+		bytes, err := ioutil.ReadAll(res.Body)
+		if err != nil {
+			return nil, fmt.Errorf("reading response body: %v", err)
+		}
+
+		return bytes, nil
+}
+
+func (g *Group) load(key string, ) (ByteView, error) {
 	bytes, err := g.loader.Load(key)
 	if err != nil {
 		return ByteView{}, err
@@ -58,7 +109,7 @@ func (g *Group) load(key string,) (ByteView, error) {
 	return view, nil
 }
 
-func (g *Group) populateCache(key string, view ByteView)  {
+func (g *Group) populateCache(key string, view ByteView) {
 	g.mainCache.add(key, view)
 }
 
